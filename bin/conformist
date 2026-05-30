@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# conformist — whole-repo, cross-format linter and bootstrapper for eng-*(7)
+# conventions. See doc/conformist.7.scd and amarbel-llc/eng#100.
+set -euo pipefail
+
+# Resolve this script's real location so the lib/ dir is found regardless of how
+# conformist is invoked (PATH, symlink, relative path).
+cf_resolve_self() {
+  local src=${BASH_SOURCE[0]} dir
+  while [[ -L $src ]]; do
+    dir=$(cd -P "$(dirname "$src")" >/dev/null 2>&1 && pwd)
+    src=$(readlink "$src")
+    [[ $src != /* ]] && src=$dir/$src
+  done
+  cd -P "$(dirname "$src")" >/dev/null 2>&1 && pwd
+}
+
+CF_BIN=$(cf_resolve_self)
+CF_LIB=${CONFORMIST_LIB:-$CF_BIN/../lib/conformist}
+[[ -d $CF_LIB ]] || {
+  echo "conformist: cannot locate lib dir at $CF_LIB" >&2
+  exit 2
+}
+CF_LIB=$(cd "$CF_LIB" && pwd)
+
+# shellcheck source=lib/conformist/common.sh
+. "$CF_LIB/common.sh"
+# shellcheck source=lib/conformist/rules.sh
+. "$CF_LIB/rules.sh"
+# shellcheck source=lib/conformist/check.sh
+. "$CF_LIB/check.sh"
+# shellcheck source=lib/conformist/bootstrap.sh
+. "$CF_LIB/bootstrap.sh"
+
+cf_version() {
+  local vf=$CF_BIN/../VERSION
+  if [[ -f $vf ]]; then head -n1 "$vf"; else echo "unknown"; fi
+}
+
+cf_usage() {
+  cat >&2 <<'EOF'
+conformist — eng-conformance linter and bootstrapper
+
+usage:
+  conformist check [dir]              lint a repo against the eng-*(7) rules
+  conformist bootstrap [opts] [dir]   scaffold an eng-conformant repo
+  conformist rules                    list every rule and its spec citation
+  conformist version                  print conformist's version
+  conformist help                     show this help
+
+With no arguments, conformist checks the current directory.
+EOF
+}
+
+cf_cmd_rules() {
+  cf_register_specs
+  local id
+  for id in $(printf '%s\n' "${!CF_SPEC[@]}" | sort); do
+    printf '%s%s%s\n  %s\n' "$CF_BOLD" "$id" "$CF_RESET" "${CF_SPEC[$id]}"
+  done
+}
+
+main() {
+  local cmd=${1:-check}
+  [[ $# -gt 0 ]] && shift || true
+  case $cmd in
+  check) cf_cmd_check "$@" ;;
+  bootstrap) cf_cmd_bootstrap "$@" ;;
+  rules) cf_cmd_rules ;;
+  version | --version | -v) cf_version ;;
+  help | --help | -h) cf_usage ;;
+  *)
+    cf_err "unknown command: $cmd"
+    cf_usage
+    exit 2
+    ;;
+  esac
+}
+
+main "$@"
