@@ -1,71 +1,77 @@
 set shell := ["bash", "-uc"]
 
-set dotenv-load := false
+# CI-equivalent entrypoint: chains the lifecycle aggregates (see
+# eng-design_patterns-justfile(7)). `just` (no args) passing means the repo is
+# in a good state.
+default: lint build test
 
-conformist := justfile_directory() / "bin/conformist"
+### pre-build
 
-# list recipes
-_default:
-    @just --list
+lint: lint-conformance lint-shell
 
-### nix
+# conformist checks itself (self-consumption)
+[group("pre-build")]
+lint-conformance:
+    ./bin/conformist check .
 
-# build the conformist package
-build-flake:
-    nix build
-
-# enter the dev shell
-develop:
-    nix develop
-
-### testing
-
-# run the bats test suite
-test:
-    bats zz-tests_bats
-
-# run conformist against this repo (self-check)
-self-check:
-    {{ conformist }} check .
-
-### formatting
-
-# format all files via treefmt
-format:
-    nix fmt
-
-# check formatting without writing
-format-check:
-    nix fmt -- --fail-on-change
-
-# lint shell sources with shellcheck
+# shellcheck the shell sources
+[group("pre-build")]
 lint-shell:
     shellcheck bin/conformist lib/conformist/*.sh
 
-### manpages
+### build
 
-# render a manpage to stdout (e.g. `just man conformist`)
-man page:
-    scdoc < doc/{{ page }}.7.scd | man -l -
+build: build-man
 
-### conformance
+# render the conformist manpage with scdoc (build-check, output discarded)
+[group("build")]
+build-man:
+    scdoc < doc/conformist.7.scd >/dev/null
 
-# check this repo for eng-conformance
-lint:
-    {{ conformist }} check .
+### post-build
 
-# list every conformist rule and its spec citation
-rules:
-    {{ conformist }} rules
+test: test-bats
 
-### versioning
+# run the bats suite
+[group("post-build")]
+test-bats:
+    bats zz-tests_bats
 
-# edit VERSION and commit the bump
-bump-version:
-    "${EDITOR:-vi}" VERSION
-    git add VERSION
-    git commit -m "bumped version to $(cat VERSION)"
+### codemod
 
-# create the annotated v$(cat VERSION) release tag
-release-tag:
-    git tag -a "v$(cat VERSION)" -m "v$(cat VERSION)"
+codemod-fmt: codemod-fmt-treefmt
+
+# format the worktree in place (nix fmt)
+[group("codemod")]
+codemod-fmt-treefmt:
+    nix fmt
+
+### inspection
+
+# list every conformist rule and the manpage clause it enforces
+[group("inspection")]
+list-rules:
+    ./bin/conformist rules
+
+# scaffold an eng-conformant repo into DIR (e.g. `just bootstrap-repo /tmp/demo`)
+[group("inspection")]
+bootstrap-repo dir:
+    ./bin/conformist bootstrap {{ dir }}
+
+### maintenance
+
+# rewrite the ANDSOCANYOU_VERSION line in version.env (pure mutation)
+[group("maintenance")]
+bump-version new_version:
+    sed -E -i "s/^(export ANDSOCANYOU_VERSION)=.*/\\1={{ new_version }}/" version.env
+
+# create and push the signed v<sem> tag, then verify it
+[group("maintenance")]
+tag message:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    . version.env
+    t="v${ANDSOCANYOU_VERSION:?missing ANDSOCANYOU_VERSION in version.env}"
+    git tag -s -m "{{ message }}" "$t"
+    git push origin "$t"
+    git tag -v "$t"

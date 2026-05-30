@@ -24,11 +24,18 @@
         pkgs = import nixpkgs {inherit system;};
         treefmtEval = treefmt-nix.lib.evalModule pkgs ./treefmt.nix;
 
+        # Version source of truth is version.env (eng-versioning(7)):
+        # `export ANDSOCANYOU_VERSION=<semver>`.
+        version = let
+          m = builtins.match ".*ANDSOCANYOU_VERSION=([0-9][^\n\"]*).*" (builtins.readFile ./version.env);
+        in
+          if m == null then "0.0.0" else builtins.head m;
+
         # conformist is a pure bash + coreutils tool. Wrap it so the runtime
         # tools it prefers (ripgrep) are on PATH, and ship its lib/ alongside.
         conformist = pkgs.stdenv.mkDerivation {
           pname = "conformist";
-          version = builtins.readFile ./VERSION;
+          inherit version;
           src = ./.;
 
           nativeBuildInputs = [pkgs.makeWrapper];
@@ -38,7 +45,7 @@
             mkdir -p $out/bin $out/lib
             cp -r lib/conformist $out/lib/conformist
             install -Dm755 bin/conformist $out/bin/conformist
-            install -Dm644 VERSION $out/VERSION
+            install -Dm644 version.env $out/version.env
             wrapProgram $out/bin/conformist \
               --set CONFORMIST_LIB $out/lib/conformist \
               --prefix PATH : ${pkgs.lib.makeBinPath [pkgs.ripgrep pkgs.coreutils pkgs.gnugrep pkgs.gnused pkgs.findutils]}
@@ -60,7 +67,7 @@
           # the conformist manpage, built from scdoc (never committed rendered)
           manpages = pkgs.stdenv.mkDerivation {
             pname = "andsocanyou-manpages";
-            version = builtins.readFile ./VERSION;
+            inherit version;
             src = ./doc;
             nativeBuildInputs = [pkgs.scdoc];
             buildPhase = ''
@@ -75,6 +82,19 @@
           };
         };
 
+        # Self-consumption: the repo must pass its own lint and stay formatted.
+        checks = {
+          formatting = treefmtEval.config.build.check self;
+
+          conformance =
+            pkgs.runCommand "conformist-self-check" {
+              nativeBuildInputs = [conformist];
+            } ''
+              cp -r ${self} repo && chmod -R u+w repo && cd repo
+              conformist check . && touch $out
+            '';
+        };
+
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
             just
@@ -84,6 +104,7 @@
             ripgrep
             bats
             alejandra
+            conformist
           ];
         };
       }

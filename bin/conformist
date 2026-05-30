@@ -33,8 +33,18 @@ CF_LIB=$(cd "$CF_LIB" && pwd)
 . "$CF_LIB/bootstrap.sh"
 
 cf_version() {
-  local vf=$CF_BIN/../VERSION
-  if [[ -f $vf ]]; then head -n1 "$vf"; else echo "unknown"; fi
+  # Version source of truth is version.env (eng-versioning(7)): a line
+  # `export <REPO>_VERSION=<semver>`. Read the semver out of it.
+  local vf=$CF_BIN/../version.env v
+  if [[ -f $vf ]]; then
+    v=$(grep -E '^[[:space:]]*(export[[:space:]]+)?[A-Z][A-Z0-9_]*_VERSION=' "$vf" | head -n1)
+    v=${v#*=}
+    v=${v//\"/}
+    v=${v//[[:space:]]/}
+    printf '%s\n' "${v:-unknown}"
+  else
+    echo "unknown"
+  fi
 }
 
 cf_usage() {
