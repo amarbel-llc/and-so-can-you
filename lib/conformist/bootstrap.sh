@@ -81,6 +81,7 @@ cf_cmd_bootstrap() {
 
   mkdir -p "$dir/doc"
   cf_render "$tpl/version.env.tpl" "$dir/version.env"
+  cf_render "$tpl/LICENSE.tpl" "$dir/LICENSE"
   cf_render "$tpl/README.md.tpl" "$dir/README.md"
   cf_render "$tpl/AGENTS.md.tpl" "$dir/AGENTS.md"
   cf_render "$tpl/justfile.tpl" "$dir/justfile"
