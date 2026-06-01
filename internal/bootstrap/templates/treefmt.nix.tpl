@@ -1,4 +1,5 @@
-# treefmt.nix — formatter configuration for @@NAME@@ (see eng-nix(7))
+# treefmt.nix — formatter configuration for @@NAME@@
+# (see eng-design_patterns-justfile(7) LINT-FMT).
 {...}: {
   projectRootFile = "flake.nix";
 
@@ -27,5 +28,6 @@
     "result"
     "result-*"
     ".direnv"
+    "*.scd"
   ];
 }

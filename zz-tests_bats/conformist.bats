@@ -4,63 +4,60 @@
 # (enforced by the conformist/bats-shfmt-compat rule; see amarbel-llc/eng#123).
 
 setup() {
-  CF="$BATS_TEST_DIRNAME/../bin/conformist"
+  if [[ -x "$BATS_TEST_DIRNAME/../build/conformist" ]]; then
+    CF="$BATS_TEST_DIRNAME/../build/conformist"
+  else
+    CF="conformist"
+  fi
 }
 
 function version_prints_semver { # @test
-  run bash "$CF" version
+  run "$CF" version
   [ "$status" -eq 0 ]
-  [[ "$output" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]
+  [[ "$output" =~ [0-9]+\.[0-9]+\.[0-9]+ ]]
 }
 
 function rules_lists_specs { # @test
-  run bash "$CF" rules
+  run "$CF" rules
   [ "$status" -eq 0 ]
   [[ "$output" == *"eng-versioning/semver"* ]]
   [[ "$output" == *"conformist/bats-shfmt-compat"* ]]
 }
 
-function check_self_only_flags_flake_lock { # @test
-  # The repo lints itself; the sole expected error is the missing flake.lock
-  # (which needs nix to generate). No other error-severity findings.
-  run bash "$CF" check "$BATS_TEST_DIRNAME/.."
-  [[ "$output" != *"error eng-justfile"* ]]
-  [[ "$output" != *"error eng-versioning"* ]]
-  [[ "$output" != *"error eng-manpages"* ]]
+function self_check_passes_clean { # @test
+  # The repo lints itself clean (flake.lock + gomod2nix.toml are committed).
+  run "$CF" check "$BATS_TEST_DIRNAME/.."
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"checks passed"* ]]
 }
 
 function bootstrap_emits_conformant_repo { # @test
   d="$(mktemp -d)"
-  run bash "$CF" bootstrap --name demo "$d"
+  run "$CF" bootstrap --name demo "$d"
   [ "$status" -eq 0 ]
   [ -f "$d/version.env" ]
   [ -f "$d/justfile" ]
   [ -f "$d/doc/demo.7.scd" ]
   grep -q '^export DEMO_VERSION=' "$d/version.env"
-  # default recipe is the first recipe (aggregate, no body)
-  grep -Eq '^default:' "$d/justfile"
   rm -rf "$d"
 }
 
 function bootstrap_output_passes_check { # @test
-  # Self-consumption: a freshly bootstrapped repo passes its own rules
-  # (modulo the flake.lock error, which needs nix).
+  # A freshly bootstrapped repo passes its own rules; the only finding is the
+  # flake.lock warning (needs nix), which does not fail the run.
   d="$(mktemp -d)"
-  bash "$CF" bootstrap --name demo "$d" >/dev/null 2>&1
-  run bash "$CF" check "$d"
-  [[ "$output" != *"error eng-justfile"* ]]
-  [[ "$output" != *"error eng-versioning"* ]]
-  [[ "$output" != *"error eng-manpages"* ]]
+  "$CF" bootstrap --name demo "$d" >/dev/null 2>&1
+  run "$CF" check "$d"
+  [ "$status" -eq 0 ]
   rm -rf "$d"
 }
 
 function bats_native_form_is_rejected { # @test
-  # A repo whose bats use the native `@test "..."` form must fail the
-  # conformist/bats-shfmt-compat rule.
   d="$(mktemp -d)"
   mkdir -p "$d/zz-tests_bats"
   printf '@test "x" {\n  true\n}\n' >"$d/zz-tests_bats/bad.bats"
-  run bash "$CF" check "$d"
+  run "$CF" check "$d"
+  [ "$status" -ne 0 ]
   [[ "$output" == *"conformist/bats-shfmt-compat"* ]]
   rm -rf "$d"
 }

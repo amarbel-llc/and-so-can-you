@@ -1,4 +1,11 @@
+# nix
 /result
 /result-*
-.direnv/
-build/
+repl-result-*
+/.direnv
+
+# go build output
+/build
+
+# llm
+.claude

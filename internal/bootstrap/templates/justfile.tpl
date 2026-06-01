@@ -32,7 +32,7 @@ test: test-bats
 # run the bats suite
 [group("post-build")]
 test-bats:
-    nix develop --command bats zz-tests_bats
+    bats zz-tests_bats
 
 ### codemod
 

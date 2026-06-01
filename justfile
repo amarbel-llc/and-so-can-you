@@ -1,77 +1,138 @@
-set shell := ["bash", "-uc"]
+# conformist justfile. Conventions: eng-design_patterns-justfile(7),
+# eng-versioning(7). `default` runs the full local CI lane.
 
-# CI-equivalent entrypoint: chains the lifecycle aggregates (see
-# eng-design_patterns-justfile(7)). `just` (no args) passing means the repo is
-# in a good state.
-default: lint build test
+default: validate lint build test
 
-### pre-build
+# --- validate (cheap pre-build gate) ---
 
-lint: lint-conformance lint-shell
+validate: validate-devshell
 
-# conformist checks itself (self-consumption)
-[group("pre-build")]
-lint-conformance:
-    ./bin/conformist check .
+# The devShell must evaluate and build before anything else is worth trying.
+validate-devshell:
+    nix build --no-link .#devShells.{{ arch() }}-linux.default
 
-# shellcheck the shell sources
-[group("pre-build")]
-lint-shell:
-    shellcheck bin/conformist lib/conformist/*.sh
+# --- lint ---
 
-### build
+lint: lint-fmt
 
-build: build-man
+# Read-only formatting gate via the treefmt-nix `checks.formatting` derivation
+# (the sandboxed counterpart to the writing `nix fmt`).
+lint-fmt:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    system=$(nix eval --raw --impure --expr 'builtins.currentSystem')
+    nix build ".#checks.${system}.formatting" --no-link --print-build-logs
 
-# render the conformist manpage with scdoc (build-check, output discarded)
-[group("build")]
-build-man:
-    scdoc < doc/conformist.7.scd >/dev/null
+# --- build ---
 
-### post-build
+build: build-gomod2nix build-go build-nix
 
-test: test-bats
+# Regenerate gomod2nix.toml from go.mod/go.sum. Run after changing deps.
+build-gomod2nix:
+    nix develop --command gomod2nix
 
-# run the bats suite
-[group("post-build")]
-test-bats:
-    bats zz-tests_bats
+# Out-of-nix go build for a fast inner loop. Injects the version from
+# version.env (commit stays "dev"); the nix build derives both authoritatively
+# from the fork's buildGoApplication (eng-versioning(7)).
+build-go: build-gomod2nix
+    #!/usr/bin/env bash
+    set -euo pipefail
+    . version.env
+    nix develop --command go build \
+        -ldflags "-X main.version=${ANDSOCANYOU_VERSION} -X main.commit=dev" \
+        -o build/conformist ./cmd/conformist
 
-### codemod
+build-nix:
+    nix build --show-trace
 
-codemod-fmt: codemod-fmt-treefmt
+run-nix *ARGS:
+    nix run . -- {{ ARGS }}
 
-# format the worktree in place (nix fmt)
-[group("codemod")]
-codemod-fmt-treefmt:
-    nix fmt
+# --- test ---
 
-### inspection
+test: test-go test-bats
 
-# list every conformist rule and the manpage clause it enforces
+test-go:
+    nix develop --command go test ./...
+
+# run the bats suite against the freshly built binary (./build/conformist)
+test-bats: build-go
+    nix develop --command bats zz-tests_bats
+
+# --- inspection ---
+
+# list every conformist rule and the eng-*(7) clause it enforces
 [group("inspection")]
 list-rules:
-    ./bin/conformist rules
+    nix run . -- rules
 
 # scaffold an eng-conformant repo into DIR (e.g. `just bootstrap-repo /tmp/demo`)
 [group("inspection")]
 bootstrap-repo dir:
-    ./bin/conformist bootstrap {{ dir }}
+    nix run . -- bootstrap {{ dir }}
 
-### maintenance
+# --- format ---
 
-# rewrite the ANDSOCANYOU_VERSION line in version.env (pure mutation)
+codemod-fmt: codemod-fmt-treefmt
+
+codemod-fmt-treefmt:
+    nix fmt
+
+# --- maintenance ---
+
+update-go: && build-gomod2nix
+    nix develop --command go mod tidy
+
 [group("maintenance")]
 bump-version new_version:
-    sed -E -i "s/^(export ANDSOCANYOU_VERSION)=.*/\\1={{ new_version }}/" version.env
+    sed -E -i "s/^(export ANDSOCANYOU_VERSION)=.*/\1={{ new_version }}/" version.env
 
-# create and push the signed v<sem> tag, then verify it
 [group("maintenance")]
 tag message:
     #!/usr/bin/env bash
     set -euo pipefail
     . version.env
-    t="v${ANDSOCANYOU_VERSION:?missing ANDSOCANYOU_VERSION in version.env}"
-    git tag -s -m "{{ message }}" "$t"
-    git push origin "$t"
-    git tag -v "$t"
+    tag="v${ANDSOCANYOU_VERSION:?missing ANDSOCANYOU_VERSION in version.env}"
+    git tag -s -m "{{ message }}" "$tag"
+    echo "Created tag: $tag"
+    git push origin "$tag"
+    echo "Pushed $tag"
+    git tag -v "$tag"
+
+[group("maintenance")]
+release new_version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    # Release only from the default branch.
+    branch=$(git rev-parse --abbrev-ref HEAD)
+    if [[ "$branch" != "master" ]]; then
+        echo "release only allowed from master (on '$branch')" >&2
+        exit 1
+    fi
+
+    # Generate the changelog BEFORE bump-version — the release-bump commit
+    # MUST NOT appear in the changelog it announces.
+    prev=$(git tag --sort=-v:refname -l "v*" | head -1)
+    header="release v{{ new_version }}"
+    if [[ -n "$prev" ]]; then
+        summary=$(git log --format='- %s' "$prev"..HEAD)
+        msg="$header"$'\n\n'"$summary"
+    else
+        msg="$header"
+    fi
+
+    just bump-version "{{ new_version }}"
+    git add version.env
+    git commit -m "$header"
+
+    just tag "$msg"
+
+    gh release create "v{{ new_version }}" --title "$header" --notes "$msg"
+
+# --- clean ---
+
+clean: clean-build
+
+clean-build:
+    rm -rf result build/

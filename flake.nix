@@ -2,109 +2,122 @@
   description = "andsocanyou — conformist: eng-conformance linter and bootstrapper";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # amarbel-llc/nixpkgs fork. Its overlay carries buildGoApplication, which
+    # auto-injects `-X main.version` (read from version.env) and `-X main.commit`
+    # (from src.rev) — no per-repo ldflags wiring. See eng-versioning(7) and
+    # amarbel-llc/nixpkgs#31.
+    igloo.url = "github:amarbel-llc/igloo";
+
+    # Pinned plain nixpkgs as the source of go_1_26 (matches go.mod's toolchain),
+    # mirroring treelint/moxy.
+    nixpkgs-master.url = "github:NixOS/nixpkgs/d233902339c02a9c334e7e593de68855ad26c4cb";
+
+    utils.url = "https://flakehub.com/f/numtide/flake-utils/0.1.102";
 
     treefmt-nix = {
       url = "github:numtide/treefmt-nix";
-      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.nixpkgs.follows = "igloo";
     };
 
-    flake-utils.url = "github:numtide/flake-utils";
+    # gomod2nix CLI for the devShell. Kept as an explicit input (rather than via
+    # mkGoEnv) so `nix develop` evaluates before gomod2nix.toml exists — that
+    # breaks the chicken-and-egg of generating the lock from inside the shell.
+    gomod2nix = {
+      url = "github:nix-community/gomod2nix";
+      inputs.nixpkgs.follows = "nixpkgs-master";
+      inputs.flake-utils.follows = "utils";
+    };
   };
 
-  outputs = {
-    self,
-    nixpkgs,
-    treefmt-nix,
-    flake-utils,
-    ...
-  }:
-    flake-utils.lib.eachDefaultSystem (
-      system: let
-        pkgs = import nixpkgs {inherit system;};
+  outputs =
+    {
+      self,
+      igloo,
+      nixpkgs-master,
+      utils,
+      treefmt-nix,
+      gomod2nix,
+    }:
+    utils.lib.eachDefaultSystem (
+      system:
+      let
+        pkgs = import igloo { inherit system; };
+        pkgs-master = import nixpkgs-master { inherit system; };
         treefmtEval = treefmt-nix.lib.evalModule pkgs ./treefmt.nix;
 
-        # Version source of truth is version.env (eng-versioning(7)):
-        # `export ANDSOCANYOU_VERSION=<semver>`.
-        version = let
-          m = builtins.match ".*ANDSOCANYOU_VERSION=([0-9][^\n\"]*).*" (builtins.readFile ./version.env);
-        in
-          if m == null then "0.0.0" else builtins.head m;
-
-        # conformist is a pure bash + coreutils tool. Wrap it so the runtime
-        # tools it prefers (ripgrep) are on PATH, and ship its lib/ alongside.
-        conformist = pkgs.stdenv.mkDerivation {
+        conformist = pkgs.buildGoApplication {
           pname = "conformist";
-          inherit version;
-          src = ./.;
-
-          nativeBuildInputs = [pkgs.makeWrapper];
-
-          installPhase = ''
-            runHook preInstall
-            mkdir -p $out/bin $out/lib
-            cp -r lib/conformist $out/lib/conformist
-            install -Dm755 bin/conformist $out/bin/conformist
-            install -Dm644 version.env $out/version.env
-            wrapProgram $out/bin/conformist \
-              --set CONFORMIST_LIB $out/lib/conformist \
-              --prefix PATH : ${pkgs.lib.makeBinPath [pkgs.ripgrep pkgs.coreutils pkgs.gnugrep pkgs.gnused pkgs.findutils]}
-            runHook postInstall
-          '';
-
-          meta = {
-            description = "Whole-repo cross-format linter and bootstrapper for eng-*(7) conventions";
-            mainProgram = "conformist";
-          };
+          # `src = self` lets buildGoApplication read version.env for
+          # `-X main.version` and src.rev for `-X main.commit`.
+          src = self;
+          pwd = ./.;
+          modules = ./gomod2nix.toml;
+          subPackages = [ "./cmd/conformist" ];
+          go = pkgs-master.go_1_26;
+          GOTOOLCHAIN = "local";
+          doCheck = false;
         };
-      in {
+
+        # Man pages built by Nix, never committed (eng-manpages(7) PRINCIPLE 4):
+        # section 7 is hand-written scdoc; section 1 is generated from the cobra
+        # command tree via `conformist gen-man` (PRINCIPLE 3).
+        manpages =
+          pkgs.runCommand "conformist-manpages"
+            {
+              nativeBuildInputs = [
+                pkgs.scdoc
+                conformist
+              ];
+            }
+            ''
+              mkdir -p $out/share/man/man1 $out/share/man/man7
+              for f in ${self}/doc/*.scd; do
+                scdoc < "$f" > "$out/share/man/man7/$(basename "''${f%.scd}")"
+              done
+              conformist gen-man "$out/share/man/man1"
+            '';
+      in
+      {
+        packages = {
+          default = conformist;
+          inherit conformist manpages;
+        };
+
         formatter = treefmtEval.config.build.wrapper;
 
-        packages = {
-          inherit conformist;
-          default = conformist;
-
-          # the conformist manpage, built from scdoc (never committed rendered)
-          manpages = pkgs.stdenv.mkDerivation {
-            pname = "andsocanyou-manpages";
-            inherit version;
-            src = ./doc;
-            nativeBuildInputs = [pkgs.scdoc];
-            buildPhase = ''
-              for f in *.scd; do
-                scdoc < "$f" > "''${f%.scd}"
-              done
-            '';
-            installPhase = ''
-              mkdir -p $out/share/man/man7
-              install -Dm644 *.7 -t $out/share/man/man7
-            '';
-          };
-        };
-
-        # Self-consumption: the repo must pass its own lint and stay formatted.
         checks = {
           formatting = treefmtEval.config.build.check self;
 
+          # Self-consumption: conformist must lint its own tree clean. `just` is
+          # needed because the justfile rules parse it via `just --dump`.
           conformance =
-            pkgs.runCommand "conformist-self-check" {
-              nativeBuildInputs = [conformist];
-            } ''
-              cp -r ${self} repo && chmod -R u+w repo && cd repo
-              conformist check . && touch $out
-            '';
+            pkgs.runCommand "conformist-self-check"
+              {
+                nativeBuildInputs = [
+                  conformist
+                  pkgs.just
+                ];
+              }
+              ''
+                cp -r ${self} repo && chmod -R u+w repo && cd repo
+                conformist check . && touch $out
+              '';
         };
 
-        devShells.default = pkgs.mkShell {
-          packages = with pkgs; [
-            just
-            scdoc
-            shfmt
-            shellcheck
-            ripgrep
-            bats
-            alejandra
-            conformist
+        devShells.default = pkgs-master.mkShell {
+          # Deliberately NOT including the `conformist` package here: it would
+          # force buildGoApplication (which reads ./gomod2nix.toml) to evaluate,
+          # and the devShell must come up before gomod2nix.toml exists so it can
+          # be used to generate it. bats falls back to ./build/conformist.
+          packages = [
+            pkgs-master.go_1_26
+            pkgs-master.gofumpt
+            pkgs-master.golangci-lint
+            pkgs-master.gopls
+            gomod2nix.packages.${system}.default
+            pkgs.just
+            pkgs.scdoc
+            pkgs.bats
           ];
         };
       }

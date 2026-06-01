@@ -1,90 +1,88 @@
 # andsocanyou
 
-> owner: `friedenberg` · contact: `eng@amarbel.example`
-
-**conformist** — a whole-repo, cross-format linter and bootstrapper that makes a
-repository conform to the [`eng-*(7)`](https://github.com/amarbel-llc/eng/tree/master/doc)
+**conformist** — a whole-repo linter and bootstrapper that checks whether a
+repository follows the [`eng-*(7)`](https://github.com/amarbel-llc/eng/tree/master/doc)
 engineering conventions, and scaffolds new repositories that already do.
 
-This is a ground-up redesign of `andsocanyou` (formerly a Homebrew-bootstrap
-template) around two ideas from [amarbel-llc/eng#100](https://github.com/amarbel-llc/eng/issues/100):
+Two halves that feed each other:
 
-1. **Lint** — treat a repo's heterogeneous "meta" files (`justfile`, `README.md`,
-   `flake.nix`, `VERSION`, `identity.toml`, `doc/*.7.scd`) as first-class
-   lintable artifacts under one ruleset, mechanically encoding the `eng-*(7)`
-   manpages (`eng(7)`'s CONFORMANCE section is the contract).
-2. **Bootstrap** — scaffold a new repo that is eng-conformant from the first
-   commit, then immediately lint the scaffold so bootstrap *proves its own
-   output* (self-consumption).
+1. **Lint** — `conformist check` treats a repo's heterogeneous "meta" files
+   (`justfile`, `version.env`, `flake.nix`, `.envrc`, `doc/*.scd`, `*.bats`) as
+   first-class lintable artifacts under one ruleset. Each rule encodes a
+   mechanically-checkable clause from an `eng-*(7)` page and **carries that
+   citation with it** (`conformist rules` prints the full map).
+2. **Bootstrap** — `conformist bootstrap` scaffolds a new repo that is
+   eng-conformant from the first commit, then immediately lints the scaffold so
+   bootstrap *proves its own output*.
 
-Lint and bootstrap feed each other: bootstrap emits a repo that `conformist
-check` passes, and conformist's own repo is itself a conformant repo it can
-lint — the tool eats its own dog food.
+conformist's own repo is itself a conformant repo it lints (`nix build
+.#checks.<sys>.conformance`), so CI fails if andsocanyou stops conforming.
+
+## Why Go
+
+The rules are parsers, not greps. The justfile is read from the authoritative
+`just --dump` JSON AST (recipe order, body presence, names); `version.env` and
+scdoc sources go through dedicated parsers. Each rule is a Go value whose spec
+citation lives on the rule, so `conformist rules` can never drift from what the
+checks enforce.
 
 ## Usage
 
 ```sh
-conformist check [dir]              # lint a repo against the eng-*(7) rules
+conformist [dir]                    # lint dir (default: .)
+conformist check [dir]              # same, explicit
 conformist bootstrap [opts] [dir]   # scaffold an eng-conformant repo
 conformist rules                    # list every rule and its spec citation
 conformist version                  # print version
 ```
 
-With no arguments, `conformist` checks the current directory.
-
 ### Bootstrap options
 
 ```
---name NAME       canonical repo name   (default: target dir basename)
---owner OWNER     github org or user    (default: amarbel-llc)
---contact ADDR    role contact address  (default: eng@amarbel.example)
---force           write into a non-empty directory
+--name NAME   canonical repo name (default: target dir basename)
+--force       write into a non-empty directory
 ```
 
 ## What it checks
 
-Every rule cites the normative `eng-*(7)` clause it enforces (`conformist
-rules` prints the full map). Summary:
-
-| concern | rule(s) | source |
-| --- | --- | --- |
-| layout | `justfile`, `README.md`, `VERSION`, `identity.toml`, `doc/` present | `eng(7)` LAYOUT/CONFORMANCE |
-| versioning | single bare-semver line, no leading `v` | `eng-versioning(7)` |
-| identity | `name`/`owner`/`contact` keys; role contact | `eng-identity(7)` |
-| justfile | `_default` runs `just --list`; doc comments; verb-noun names | `eng-design_patterns-justfile(7)` |
-| manpages | `topic.SECTION.scd` naming; NAME + DESCRIPTION; no rendered roff | `eng-manpages(7)` |
-| nix | `flake.lock` committed; `devShells.default`; treefmt formatter | `eng-nix(7)` |
-| direnv | `.envrc` uses `use flake`; no secrets in `.envrc` | `eng-direnv(7)` |
-| bats | tests use `function NAME { # @test` form | [eng#123](https://github.com/amarbel-llc/eng/issues/123) |
-
-Findings are `error` (fails the run, non-zero exit) or `warn` (reported, exit 0).
+`conformist rules` prints the full rule-to-clause map; the rules cover repo
+layout, `version.env` (single bare-semver source of truth), the justfile
+(`default` aggregate, no generic names), scdoc manpages, the flake
+(`flake.lock`, `devShells.default`, treefmt formatter), `.envrc`, and bats test
+form. Findings are `error` (fails the run, non-zero exit) or `warn` (reported,
+exit 0). See `conformist`(7) for the full list and severities.
 
 ## Layout
 
-- `bin/conformist` — CLI entrypoint
-- `lib/conformist/` — `common.sh` (reporting), `rules.sh` (the encoded rules),
-  `check.sh`, `bootstrap.sh`, and `templates/` (scaffold sources)
-- `doc/conformist.7.scd` — the manpage (normative for conformist's own behaviour)
-- `zz-tests_bats/` — bats test suite
+- `cmd/conformist/` — CLI entrypoint
+- `internal/rule/` — the rule model (`Rule`, `Finding`, `Registry`)
+- `internal/rules/` — the encoded rules, one file per concern; each cites its
+  `eng-*(7)` clause
+- `internal/repo/` — lazily-parsed, typed views of the repo's meta files
+- `internal/bootstrap/` — the scaffolder and its embedded `templates/`
+- `internal/check/`, `internal/report/`, `internal/cli/` — orchestration, output, CLI
+- `doc/conformist.7.scd` — the manpage (section 1 is generated from the cobra tree)
+- `zz-tests_bats/` — bats smoke tests
 - `flake.nix` / `treefmt.nix` — nix devshell, `conformist` package, `nix fmt`
 
 ## Development
 
 ```sh
-just            # list recipes
-just lint       # conformist checks itself
-just test       # bats suite
-just check-shell# shellcheck
-just format     # nix fmt (treefmt)
+just              # validate + lint + build + test (the full local CI lane)
+just build-go     # fast out-of-nix go build to ./build/conformist
+just test-go      # go test ./...
+just test-bats    # bats suite
+just lint-fmt     # read-only formatting gate
+just codemod-fmt  # nix fmt (treefmt)
+just list-rules   # conformist rules
 ```
 
-The flake's `checks.conformance` runs `conformist check` against this repo's own
-source, so CI fails if andsocanyou stops being conformant.
-
-## Relationship to eng
+## Relationship to eng and treelint
 
 The `eng-*(7)` manpages in [amarbel-llc/eng](https://github.com/amarbel-llc/eng)
-remain the source of truth. conformist encodes the mechanically-checkable subset
-of those clauses directly (per the design decision to encode rules rather than
-parse the manpages at runtime). Formatting is delegated to `treefmt`; conformist
-owns the *structural / semantic* rules that formatters don't cover.
+remain the source of truth; conformist encodes the mechanically-checkable subset.
+It is whole-tree-granularity and ships its own rules, which is why it is a
+separate tool rather than a [treelint](https://github.com/amarbel-llc/treelint)
+mode (treelint is a per-file, external-tool multiplexer). A `conformist <dir>`
+binary that exits non-zero on findings drops cleanly into treelint as a
+`[linter.conformist]`.

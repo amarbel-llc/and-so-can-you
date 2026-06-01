@@ -1,32 +1,23 @@
-# treefmt.nix — formatter configuration for andsocanyou (see eng-nix(7))
-{...}: {
+# `nix fmt` configuration (treefmt-nix). Drives `just codemod-fmt` (write mode)
+# and `just lint-fmt` / `nix build .#checks.<sys>.formatting` (read-only gate).
+{ ... }:
+{
   projectRootFile = "flake.nix";
 
-  programs = {
-    alejandra.enable = true;
-
-    shfmt = {
-      enable = true;
-      indent_size = 2;
-    };
-
-    prettier = {
-      enable = true;
-      includes = [
-        "*.md"
-        "*.yaml"
-        "*.yml"
-        "*.json"
-      ];
-    };
-  };
+  programs.gofmt.enable = true;
+  programs.nixfmt.enable = true;
+  programs.taplo.enable = true;
 
   settings.global.excludes = [
-    "*.lock"
+    # Generated / locked — not hand-formatted.
+    "gomod2nix.toml"
     "flake.lock"
-    "result"
-    "result-*"
-    ".direnv"
+    "go.sum"
+    # scdoc sources and scaffold templates are not Go/Nix/TOML.
     "*.scd"
+    "internal/bootstrap/templates/**"
+    # Prose.
+    "*.md"
+    "LICENSE"
   ];
 }

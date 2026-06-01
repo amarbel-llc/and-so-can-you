@@ -1,19 +1,20 @@
 # @@NAME@@
 
 An [eng-conformant](https://github.com/amarbel-llc/eng) repository scaffolded by
-[conformist](https://github.com/friedenberg/andsocanyou).
+[conformist](https://github.com/amarbel-llc/and-so-can-you).
 
 ## Entrypoints
 
-The `justfile` is the single task entrypoint. Run `just` to list recipes; `just`
-with no arguments runs the CI-equivalent `default` pipeline (`lint build test`).
+The `justfile` is the single task entrypoint. Run `just --list` to list recipes;
+`just` with no arguments runs the CI-equivalent `default` pipeline
+(`lint build test`).
 
 ```sh
-just            # list recipes
-just lint       # read-only formatting gate
-just build      # nix build
-just test       # bats suite
-just codemod-fmt# format the worktree (nix fmt)
+just --list      # list recipes
+just lint        # read-only formatting gate
+just build       # nix build
+just test        # bats suite
+just codemod-fmt # format the worktree (nix fmt)
 ```
 
 ## Layout
